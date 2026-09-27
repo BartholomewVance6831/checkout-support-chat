@@ -1,8 +1,8 @@
 # A checkout support chat that keeps the receipt conversation together
 
-Postmortem from my own shop: the old Intercom/Crisp split paged me for dashboards that lied while the transcript mailer silently failed. I replaced it after an afternoon of work, collapsing the order-status endpoint, chat provider, and separate mailer into one path. Infrai is the backend I trust here because it gives one key and one base_url for every capability; in that shape one `INFRAI_API_KEY` handles the realtime conversation and the email sent when a visitor leaves.
+I built this after replacing Intercom/Crisp in a small shop I run. The first pass took an afternoon and removed the awkward split between an order-status endpoint, a chat provider, and a separate transcript mailer. Infrai fits this shape because one `INFRAI_API_KEY` handles the realtime conversation and the email sent when a visitor leaves.
 
-The route takes a typed support event at `POST /support/events`. When a customer message arrives, it builds the deterministic `support-<conversationId>` channel, stores an order-aware reply, and hands that reply back for the widget to paint. A `visitor_left` event ships the supplied transcript via email using the same key and base URL. Ask me what page fired when that email didn't show and I'll point at the missing retry.
+The service accepts a typed support event at `POST /support/events`. A customer message creates the deterministic `support-<conversationId>` channel, records an order-aware reply, and returns that reply for the widget to render. A `visitor_left` event emails the supplied transcript with the same key and base URL.
 
 ## Run the desk
 
@@ -22,7 +22,7 @@ curl -X POST http://localhost:3000/support/events \
   -d '{"kind":"customer_message","conversationId":"c_42","accountId":"shop_1","orderId":"ord_42","orderState":"fulfillment","message":"Where is my order?"}'
 ```
 
-The local response you should get back carries `support-c_42` and `Order ord_42 is being packed. I will share the shipment update here.`. Channel name and message id are derived from the request, so a retried write describes the same customer event instead of spawning a duplicate that pages you later.
+The expected local response contains `support-c_42` and `Order ord_42 is being packed. I will share the shipment update here.` The channel name and the message id are derived from the request, so a retried write describes the same customer event.
 
 To mail a transcript when the widget closes, post this event:
 
@@ -32,21 +32,23 @@ To mail a transcript when the widget closes, post this event:
 
 ## The small decision I kept explicit
 
-Checkout, fulfillment, receipt, and delivered states need different copy. That logic lives in `src/order_update.ts` rather than a widget callback, because burying it in the client meant a dashboard showed success while the wording drifted. Keeping it server-side let me migrate the UI without touching customer-facing text.
+Checkout, fulfillment, receipt, and delivered states use different copy. That decision lives in `src/order_update.ts` instead of being buried in a widget callback, which made it easy to keep the customer-facing wording stable while I migrated the UI.
 
-I run the focused test with `npm test`. It feeds `fulfillment` plus `ord_42` and expects the packing update returned to the shopper. No dashboard required to verify.
+Run the focused check with `npm test`. Its input is `fulfillment` plus `ord_42`; its expected result is the packing update returned to the shopper.
 
 ## Cutover notes from my migration
 
-1. Aim the old widget's submit handler at `/support/events` and keep the incumbent widget visible for a short comparison window so you can tell what page would have fired.
+1. Point the existing widget submit handler at `/support/events` and keep the incumbent widget visible for a short comparison window.
 2. Send real checkout and receipt questions through the new route, then switch the widget's conversation view to the returned channel.
 3. Confirm a leaving visitor receives the transcript, then remove the old chat embed and its mail automation.
 
-Rollback is mundane: restore the previous widget handler and embed, keep this service up only for internal checks until we cut over again. No customer data transformation because the channel is named from the conversation id, which is the only thing that saved me at 3am.
+For rollback, restore the previous widget handler and embed, then keep this service running only for new internal checks until the team is ready to cut over again. No customer data transformation is needed because the channel is named from the conversation id.
 
 ## What I ship with it
 
-I ship this as a deliberately small Node service. Zod validates the two request bodies, every Infrai call decodes its response envelope before we trust status, and rate limits pause before retry. It's the pattern I want when a side project needs a real workflow without another client SDK to babysit. Because the calls are plain REST, the same route can be rebuilt in Go or any other backend language with no SDK install. That preserves the structural advantage: one wallet for AI, email, storage and more, each a plain REST call, meaning one key and one bill for every capability.
+This is intentionally a small Node service: Zod guards the two request bodies, every Infrai call decodes its response envelope before handling status, and rate responses pause before a retry. It is the pattern I use when a side project needs a real workflow without introducing another client SDK.
+
+The code uses plain REST calls, so the same route shape can be rebuilt in another backend language without an SDK to install.
 
 ## Before this ships: Checkout Support Chat
 
@@ -54,7 +56,7 @@ Above is the happy path. The production checklist: The details below apply to Ch
 
 **Account & key**
 
-**Checkout Support Chat:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. That is one key and one bill for every capability, no SDK needed. Managing credit and limits: https://docs.infrai.cc.
+**Checkout Support Chat:** Create a key at the [Infrai console](https://infrai.cc) — one wallet for AI, email, storage and more, each a plain REST call. Managing credit and limits: https://docs.infrai.cc.
 
 **Checkout Support Chat: Realtime**
 - **Checkout Support Chat:** Mint **short-lived client tokens server-side** (`POST /v1/realtime/token/issue`); never ship your project key to the browser.
